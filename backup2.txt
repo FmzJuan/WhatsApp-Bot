@@ -1,0 +1,133 @@
+
+const wppconnect = require("@wppconnect-team/wppconnect");
+const readline = require("readline");
+
+// Cria interface de leitura no terminal
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+});
+
+// Arrays de números de WhatsApp para redirecionamento
+const WPP_INTERNACIONAL_LIST = [
+  "551132582999", // Hannah
+  "5511913595007", // Luciana 
+  //"5511964106009", // glayce pessoal 
+  "5511972387245", // larissa
+];
+let internationalIndex = 0; // índice para rodízio
+
+const WPP_NACIONAL = "5511964180466";    // Jr
+const WPP_FINANCEIRO = "5511948883845";  // Ana
+
+// Set para armazenar os IDs dos chats que já receberam a mensagem de boas-vindas
+const welcomedChats = new Set();
+
+// Variável para armazenar o último 'from' conhecido para respostas manuais
+let lastFrom = null;
+
+wppconnect
+  .create({
+    session: "bot-headless",
+    catchQR: (base64Qr, asciiQR) => {
+      console.clear();
+      console.log("📲 Escaneie o QR code abaixo:\n");
+      console.log(asciiQR);
+    },
+    statusFind: (statusSession, session) => {
+      console.log(`🟢 Status da sessão [${session}]:`, statusSession);
+    },
+    headless: true,
+    useChrome: true,
+    devtools: false,
+    debug: false,
+  })
+  .then((client) => start(client))
+  .catch((error) => console.error("❌ Erro ao iniciar:", error));
+
+async function sendMenu(client, to) {
+  const menu = `Bem-vindo(a)! Sou o assistente virtual da Investur Operadora e estou aqui para te ajudar. Por favor, selecione uma das opções abaixo para facilia:\n\n1. Atendimento Internacional\n2. Atendimento Nacional\n3. Financeiro\n\nSe preferir, digite sua mensagem e continuaremos a conversa`;
+  await client.sendText(to, menu);
+}
+
+function start(client) {
+  console.log("✅ Bot iniciado em modo headless!");
+
+  client.onMessage(async (message) => {
+    if (!message.body || message.isGroupMsg) return;
+    if (message.from.includes("status@broadcast")) return;
+
+    const from = message.from;
+    const text = message.body.trim();
+
+    // Atualiza o último 'from' conhecido
+    lastFrom = from;
+
+    console.log(`\n📩 Mensagem de ${from}: ${text}`);
+
+    // Envia a mensagem de boas-vindas apenas uma vez por chat
+    if (!welcomedChats.has(from)) {
+      await sendMenu(client, from);
+      welcomedChats.add(from);
+    }
+
+    // Verifica se a mensagem é uma opção do menu
+    switch (text) {
+      case "1":
+        // Pega o número da vez na lista
+        const numeroInternacional = WPP_INTERNACIONAL_LIST[internationalIndex];
+        // Incrementa o índice para a próxima vez
+        internationalIndex = (internationalIndex + 1) % WPP_INTERNACIONAL_LIST.length;
+
+        await client.sendText(
+          from,
+          `Você será redirecionado para o Atendimento Internacional. Clique no link: https://wa.me/${numeroInternacional}`
+        );
+        break;
+
+      case "2":
+        await client.sendText(from, `Você será redirecionado para o Atendimento Nacional. Clique no link: https://wa.me/${WPP_NACIONAL}`);
+        break;
+
+      case "3":
+        await client.sendText(from, `Você será redirecionado para o Financeiro. Clique no link: https://wa.me/${WPP_FINANCEIRO}`);
+        break;
+
+      default:
+        // Se não for uma opção de menu, permite a resposta manual
+        break;
+    }
+  });
+
+  // Função para iniciar a escuta de respostas manuais
+  function startManualReply(client) {
+    rl.question("🖋️ Digite sua resposta: ", async (reply) => {
+      reply = reply.trim();
+      if (!reply) {
+        console.log("⚠️ Resposta vazia, não será enviada.");
+      } else {
+        if (lastFrom) {
+          try {
+            await client.sendText(lastFrom, reply);
+            console.log(`✅ Resposta manual enviada para ${lastFrom}: ${reply}`);
+          } catch (err) {
+            console.error("❌ Erro ao enviar resposta manual:", err);
+          }
+        } else {
+          console.log("⚠️ Nenhuma conversa ativa para enviar resposta manual. Aguardando mensagem...");
+        }
+      }
+      startManualReply(client); // Continua a escutar por respostas manuais
+    });
+  }
+
+  // Inicia a escuta de respostas manuais
+  startManualReply(client);
+
+  // Fecha interface se o usuário encerrar com Ctrl+C
+  rl.on("SIGINT", () => {
+    console.log("\n👋 Encerrando bot...");
+    rl.close();
+    process.exit(0);
+  });
+}

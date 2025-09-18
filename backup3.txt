@@ -1,0 +1,159 @@
+const fs = require("fs");
+const PDFDocument = require("pdfkit");
+const readline = require("readline");
+const { create } = require("@wppconnect-team/wppconnect");
+
+// Interface de leitura no terminal
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
+
+// ========== Variáveis de Controle Globais ==========
+let contactsLog = [];
+const WPP_INTERNACIONAL_LIST = ["5511913595007", "5511972387245"];
+let internationalIndex = 0;
+const WPP_NACIONAL = "5511964180466";
+const WPP_JRP = "5511999534268";
+const WPP_INTERNACIONAL_AGENTE = "5511997710118";
+
+let lastFrom = null;
+let botStartTime = new Date();
+let humanActive = new Map();
+let welcomeSent = new Map(); // 🔥 Usaremos isso para controlar o fluxo
+
+// ========== Funções de Log, PDF e Menus (sem alterações) ==========
+function loadContactsLog() {
+  if (fs.existsSync("contactsLog.json")) {
+    contactsLog = JSON.parse(fs.readFileSync("contactsLog.json", "utf-8"));
+  }
+}
+function saveContactsLog() {
+  fs.writeFileSync("contactsLog.json", JSON.stringify(contactsLog, null, 2));
+}
+function addContactToLog(message) {
+  const from = message.from;
+  const name = message.sender.pushname || "Sem nome";
+  const date = new Date().toLocaleString("pt-BR");
+  if (!contactsLog.some((c) => c.from === from)) {
+    contactsLog.push({ from, name, date });
+    saveContactsLog();
+    console.log(`📝 Novo contato adicionado ao log: ${name} (${from})`);
+  }
+}
+function generatePDFReport(callback) {
+  const doc = new PDFDocument();
+  const fileName = "relatorio_contatos.pdf";
+  const stream = fs.createWriteStream(fileName);
+  doc.pipe(stream);
+  doc.fontSize(16).text("📊 Relatório de Contatos", { align: "center" }).moveDown();
+  if (contactsLog.length === 0) {
+    doc.fontSize(12).text("Nenhum contato registrado ainda.");
+  } else {
+    contactsLog.forEach((contact, index) => {
+      doc.fontSize(12).text(`${index + 1}. Nome: ${contact.name}\n   Número: ${contact.from}\n   Tipo: ${contact.type || "Não definido"}\n   Primeiro contato: ${contact.date}\n`).moveDown();
+    });
+  }
+  doc.end();
+  stream.on("finish", () => {
+    console.log(`✅ Relatório gerado: ${fileName}`);
+    if (callback) callback(fileName);
+  });
+}
+async function sendWelcomeMenu(client, from) {
+  const msg = `👋 *Bem-vindo(a) à Investur Operadora!*\nSou o assistente virtual e estou aqui para te ajudar.`;
+  await client.sendText(from, msg);
+}
+
+// ========== Função Principal ==========
+create()
+  .then((client) => start(client))
+  .catch((error) => console.error("Erro ao iniciar o cliente:", error));
+
+function start(client) {
+  loadContactsLog();
+
+  client.onMessage(async (message) => {
+    // Verificações iniciais para ignorar mensagens irrelevantes
+    if (message.fromMe || message.isGroupMsg || message.from.includes("status@broadcast")) {
+      return;
+    }
+
+    const from = message.from;
+    const text = (message.body || "").trim();
+    lastFrom = from;
+
+    const messageTimestamp = message.timestamp * 1000;
+    if (messageTimestamp < botStartTime.getTime()) {
+      return;
+    }
+
+    // 🔥 LÓGICA PRINCIPAL SIMPLIFICADA
+    // 1. Se o contato já está em modo humano, o bot não faz NADA.
+    if (humanActive.has(from)) {
+      // A única exceção é se o operador quiser resetar o bot para este usuário.
+      if (text === "/bot-reset") {
+          humanActive.delete(from);
+          welcomeSent.delete(from);
+          console.log(`🤖 Bot reativado manualmente para ${from}.`);
+          await sendWelcomeMenu(client, from);
+      }
+      return; // Ignora todas as outras mensagens
+    }
+
+    // 2. Se o bot ainda não enviou as boas-vindas, ele envia e para.
+    if (!welcomeSent.has(from)) {
+      console.log(`👋 Enviando boas-vindas para ${from}.`);
+      addContactToLog(message);
+      await sendWelcomeMenu(client, from);
+      welcomeSent.set(from, true); // Marca que as boas-vindas foram enviadas
+    }
+    
+    // O bot não faz mais nada automaticamente após as boas-vindas.
+    // Ele agora aguarda a intervenção manual do operador.
+  });
+
+  // ========== Resposta manual pelo Terminal (CMD) ==========
+  function startManualReply() {
+    rl.question("🖋️ Digite a resposta (ou 'relatorio' ou '/bot-reset'): ", async (reply) => {
+      reply = (reply || "").trim();
+
+      if (!lastFrom && !reply.toLowerCase().startsWith('/')) {
+          console.log("⚠️ Nenhuma conversa recente para responder. Aguarde uma mensagem.");
+          startManualReply();
+          return;
+      }
+
+      if (!reply) {
+        console.log("⚠️ Resposta vazia.");
+      } else if (reply.toLowerCase() === "relatorio") {
+        generatePDFReport();
+      } else {
+        try {
+          // 🔥 LÓGICA DE INTERVENÇÃO MANUAL
+          // Ao enviar QUALQUER resposta, o bot entra em modo humano para aquele contato.
+          await client.sendText(lastFrom, reply);
+          console.log(`✅ Resposta manual enviada para ${lastFrom}: ${reply}`);
+
+          // Ativa o modo humano IMEDIATAMENTE.
+          if (!humanActive.has(lastFrom)) {
+            humanActive.set(lastFrom, true); // O valor pode ser um simples 'true'
+            console.log(`🤖 MODO HUMANO ATIVADO para ${lastFrom}. O bot não responderá mais a este contato.`);
+          }
+        } catch (err) {
+          console.error("❌ Erro ao enviar resposta manual:", err);
+        }
+      }
+      startManualReply(); // Garante que o terminal sempre peça a próxima entrada
+    });
+  }
+
+  startManualReply();
+
+  rl.on("SIGINT", () => {
+    console.log("\n👋 Encerrando bot...");
+    rl.close();
+    process.exit(0);
+  });
+}
+
